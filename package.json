@@ -1,0 +1,65 @@
+{
+  "name": "hookbox",
+  "version": "0.1.0",
+  "description": "Zero-config local webhook inspector, verifier and replay tool. An open-source, local alternative to Webhook.site and RequestBin.",
+  "type": "module",
+  "bin": {
+    "hookbox": "dist/cli.js"
+  },
+  "main": "dist/server.js",
+  "types": "dist/server.d.ts",
+  "files": [
+    "dist",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/postbuild.mjs",
+    "dev": "tsc -p tsconfig.json --watch",
+    "start": "node dist/cli.js",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/smoke-test.mjs",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "webhook",
+    "webhooks",
+    "inspector",
+    "replay",
+    "requestbin",
+    "webhook.site",
+    "stripe",
+    "github",
+    "hmac",
+    "devtools",
+    "cli"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/reseachrandomv/hookbox.git"
+  },
+  "homepage": "https://github.com/reseachrandomv/hookbox#readme",
+  "bugs": {
+    "url": "https://github.com/reseachrandomv/hookbox/issues"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "fastify": "^5.2.0",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.7.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.17.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  }
+}
