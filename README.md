@@ -96,14 +96,14 @@ npm test           # end-to-end smoke tests
 | | **HookBox** | ngrok Inspector | Webhook.site | RequestBin (Pipedream) |
 |---|---|---|---|---|
 | Where your data lives | Your machine | Local agent UI (a cloud Traffic Inspector also exists) | Their cloud (or self-host the open-source edition) | Their cloud |
-| Account needed | No | Yes, for the ngrok agent | No for basic use | Yes, for most use |
+| Account needed | No | Yes, for the ngrok agent | No for basic use | For private bins |
 | Open source | ✅ MIT | ❌ agent is closed source | ✅ MIT edition (fewer features than the cloud) | ❌ hosted service |
 | Setup | `npx` one-liner | Install agent and sign in | Open a website, or Docker for self-host | Open a website |
 | Public URL | Optional (`--tunnel`) | ✅ core feature | ✅ | ✅ |
-| Replay to localhost | ✅ with latency | ✅ (with modifications) | Via their `whcli` forwarder | Through workflows |
-| Stripe / GitHub signature check with reasons | ✅ built in | ❌ | Via scripting on paid plans | Via workflow code |
-| Code and test-fixture export | ✅ cURL, fetch, TS, Python, HTTPie, Vitest, Jest | ❌ | Partial (cURL-style) | ❌ |
-| JSON diff of two requests | ✅ | ❌ | ❌ | ❌ |
+| Replay to localhost | ✅ with latency | ✅ (with modifications) | Via their `whcli` forwarder | Not a focus |
+| Stripe / GitHub signature check | ✅ built in, with failure reasons | Edge verification via Traffic Policy (cloud) | Via custom scripting (paid features) | Via Pipedream workflow code |
+| Code and test-fixture export | ✅ cURL, fetch, TS, Python, HTTPie, Vitest, Jest | Not a focus | Not a focus | Not a focus |
+| JSON diff of two requests | ✅ | Not a focus | Not a focus | Not a focus |
 | Works offline / on a plane | ✅ (local capture) | ❌ | ❌ (unless self-hosted) | ❌ |
 
 <sub>Based on each vendor's public docs as of November 2026. The other three also do things HookBox doesn't (hosted URLs that last, team sharing, cloud workflows), and plans and limits change, so check each vendor's site before deciding. Corrections welcome via PR.</sub>
