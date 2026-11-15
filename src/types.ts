@@ -17,6 +17,8 @@ export interface ForwardResult {
   target: string;
   /** 'replay' = manual replay from the API/UI, 'forward' = automatic --target proxy. */
   kind: 'replay' | 'forward';
+  /** HTTP method that was sent (may differ from the capture when overridden). */
+  method: string;
   ok: boolean;
   status: number | null;
   statusText: string;

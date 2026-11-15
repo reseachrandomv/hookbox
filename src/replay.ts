@@ -42,7 +42,22 @@ export function validateTarget(target: unknown): URL {
   return url;
 }
 
-export function buildForwardHeaders(req: CapturedRequest, kind: ForwardResult['kind']): Headers {
+export interface ReplayOverrides {
+  /** Send with a different HTTP method. */
+  method?: string;
+  /** Extra or replacement headers; a null value removes the header. */
+  headers?: Record<string, string | null>;
+  /** Abort after this many ms (default 30s). */
+  timeoutMs?: number;
+}
+
+const METHOD_RE = /^[A-Z]+$/;
+
+export function buildForwardHeaders(
+  req: CapturedRequest,
+  kind: ForwardResult['kind'],
+  overrides: ReplayOverrides['headers'] = {},
+): Headers {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
     const lower = name.toLowerCase();
@@ -53,6 +68,18 @@ export function buildForwardHeaders(req: CapturedRequest, kind: ForwardResult['k
         headers.append(lower, v);
       } catch {
         /* skip headers that fetch rejects */
+      }
+    }
+  }
+  for (const [name, value] of Object.entries(overrides ?? {})) {
+    const lower = name.toLowerCase();
+    if (SKIP_HEADERS.has(lower)) continue;
+    if (value === null) headers.delete(lower);
+    else {
+      try {
+        headers.set(lower, String(value));
+      } catch {
+        /* invalid header name/value from the caller: ignore */
       }
     }
   }
@@ -69,13 +96,17 @@ export async function forwardRequest(
   req: CapturedRequest,
   target: string,
   kind: ForwardResult['kind'],
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  overridesOrTimeout: ReplayOverrides | number = {},
 ): Promise<ForwardResult> {
+  const overrides: ReplayOverrides = typeof overridesOrTimeout === 'number' ? { timeoutMs: overridesOrTimeout } : overridesOrTimeout;
+  const timeoutMs = overrides.timeoutMs && overrides.timeoutMs > 0 ? overrides.timeoutMs : DEFAULT_TIMEOUT_MS;
+  const method = (overrides.method ?? req.method).toUpperCase();
   const started = performance.now();
   const at = new Date().toISOString();
   const base: ForwardResult = {
     target,
     kind,
+    method,
     ok: false,
     status: null,
     statusText: '',
@@ -93,12 +124,12 @@ export async function forwardRequest(
   } catch (err) {
     return { ...base, error: (err as Error).message };
   }
-  const method = req.method.toUpperCase();
+  if (!METHOD_RE.test(method)) return { ...base, error: `Invalid HTTP method: ${method}` };
   const hasBody = method !== 'GET' && method !== 'HEAD' && req.size > 0;
   try {
     const res = await fetch(url, {
       method,
-      headers: buildForwardHeaders(req, kind),
+      headers: buildForwardHeaders(req, kind, overrides.headers),
       body: hasBody ? decodeBody(req.body, req.bodyEncoding) : undefined,
       redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),

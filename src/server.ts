@@ -14,10 +14,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import { RequestStore } from './store.js';
-import { encodeBody, parseForm, tryParseJson } from './body.js';
-import { forwardRequest, validateTarget } from './replay.js';
-import { verifyRequest, type VerifierSecrets } from './verifier.js';
-import { CODE_LANGS, generateCode, type CodeLang } from './codegen.js';
+import { decodeBody, encodeBody, parseForm, tryParseJson } from './body.js';
+import { forwardRequest, validateTarget, type ReplayOverrides } from './replay.js';
+import { verifyRequest, verifyWithSecret, type VerifierSecrets } from './verifier.js';
+import { CODE_LANGS, CODE_LANG_LABELS, generateCode, type CodeLang } from './codegen.js';
 import { diffRequests } from './diff.js';
 import type { CapturedRequest, ForwardResult, HookBoxEvent } from './types.js';
 
@@ -46,6 +46,8 @@ export interface HookBoxOptions {
   forwardTimeoutMs?: number;
   publicDir?: string;
   logger?: boolean;
+  /** Public tunnel URL, if one is open (shown in /api/info and the dashboard). */
+  publicUrl?: string | null;
 }
 
 export interface HookBox {
@@ -58,7 +60,9 @@ export interface HookBox {
   listen(): Promise<string>;
   close(): Promise<void>;
   capture(req: FastifyRequest, raw: Buffer): CapturedRequest;
-  replay(id: string, target: string): Promise<ForwardResult | null>;
+  replay(id: string, target: string, overrides?: ReplayOverrides): Promise<ForwardResult | null>;
+  /** Sets the public tunnel URL after start-up. */
+  setPublicUrl(url: string | null): void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -264,6 +268,7 @@ export function createHookBox(opts: HookBoxOptions = {}): HookBox {
     count: store.size,
     maxHistory: store.maxHistory,
     target: options.target ?? null,
+    publicUrl: options.publicUrl ?? null,
   });
 
   /* ---------------- capture ---------------- */
@@ -329,10 +334,10 @@ export function createHookBox(opts: HookBoxOptions = {}): HookBox {
 
   /* ---------------- replay ---------------- */
 
-  async function replay(id: string, target: string): Promise<ForwardResult | null> {
+  async function replay(id: string, target: string, overrides: ReplayOverrides = {}): Promise<ForwardResult | null> {
     const item = store.get(id);
     if (!item) return null;
-    const result = await forwardRequest(item, target, 'replay', options.forwardTimeoutMs);
+    const result = await forwardRequest(item, target, 'replay', { timeoutMs: options.forwardTimeoutMs, ...overrides });
     if (store.get(id)) {
       item.lastReplay = result;
       store.update(item);
@@ -351,10 +356,12 @@ export function createHookBox(opts: HookBoxOptions = {}): HookBox {
     count: store.size,
     maxHistory: store.maxHistory,
     target: options.target ?? null,
+    publicUrl: options.publicUrl ?? null,
     persistence: store.persistence,
     verification: { stripe: Boolean(secrets.stripe), github: Boolean(secrets.github) },
     clients: broadcaster.clientCount,
     captureUrl: '/wh/*',
+    codeLangs: CODE_LANGS.map((id) => ({ id, label: CODE_LANG_LABELS[id] })),
   }));
 
   app.get('/api/requests', async (req) => {
@@ -393,15 +400,51 @@ export function createHookBox(opts: HookBoxOptions = {}): HookBox {
   app.post('/api/requests/:id/replay', async (req, reply) => {
     const { id } = req.params as { id: string };
     let target: unknown;
+    const overrides: ReplayOverrides = {};
     try {
-      target = apiJson(req.body).target ?? options.target;
+      const body = apiJson(req.body);
+      target = body.target ?? options.target;
       validateTarget(target);
+      if (body.method !== undefined) {
+        if (typeof body.method !== 'string') throw new Error('"method" must be a string');
+        overrides.method = body.method;
+      }
+      if (body.headers !== undefined) {
+        if (!body.headers || typeof body.headers !== 'object' || Array.isArray(body.headers)) throw new Error('"headers" must be an object');
+        overrides.headers = Object.fromEntries(
+          Object.entries(body.headers as Record<string, unknown>).map(([k, v]) => [k, v === null ? null : String(v)]),
+        );
+      }
+      if (body.timeoutMs !== undefined) {
+        const t = Number(body.timeoutMs);
+        if (!Number.isFinite(t) || t <= 0) throw new Error('"timeoutMs" must be a positive number');
+        overrides.timeoutMs = t;
+      }
     } catch (err) {
       return reply.code(400).send({ error: (err as Error).message });
     }
-    const result = await replay(id, target as string);
+    const result = await replay(id, target as string, overrides);
     if (!result) return reply.code(404).send({ error: 'Request not found', id });
     return result;
+  });
+
+  app.post('/api/requests/:id/verify', async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const item = store.get(id);
+    if (!item) return reply.code(404).send({ error: 'Request not found', id });
+    let body: Record<string, unknown>;
+    try {
+      body = apiJson(req.body);
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+    const provider = body.provider === 'stripe' || body.provider === 'github' ? body.provider : 'auto';
+    const secret = typeof body.secret === 'string' ? body.secret : '';
+    const tolerance = body.toleranceSec === undefined ? undefined : Number(body.toleranceSec);
+    return verifyWithSecret(decodeBody(item.body, item.bodyEncoding), item.headers, secret, {
+      provider,
+      toleranceSec: Number.isFinite(tolerance) ? tolerance : undefined,
+    });
   });
 
   app.get('/api/requests/:id/curl', async (req, reply) => {
@@ -427,8 +470,8 @@ export function createHookBox(opts: HookBoxOptions = {}): HookBox {
     const q = req.query as { lang?: string; target?: string };
     const item = store.get(id);
     if (!item) return reply.code(404).send({ error: 'Request not found', id });
-    const lang = (q.lang ?? 'curl') as CodeLang;
-    if (!CODE_LANGS.includes(lang)) return reply.code(400).send({ error: `Unknown lang "${q.lang}". Use one of: ${CODE_LANGS.join(', ')}` });
+    const lang = (q.lang ?? 'curl') as CodeLang | 'all';
+    if (lang !== 'all' && !CODE_LANGS.includes(lang)) return reply.code(400).send({ error: `Unknown lang "${q.lang}". Use one of: ${CODE_LANGS.join(', ')}` });
     let base = originOf(req);
     if (q.target) {
       try {
@@ -437,7 +480,10 @@ export function createHookBox(opts: HookBoxOptions = {}): HookBox {
         return reply.code(400).send({ error: (err as Error).message });
       }
     }
-    return { id, lang, code: generateCode(item, lang, base) };
+    if (lang === 'all') {
+      return { id, lang, snippets: CODE_LANGS.map((l) => ({ lang: l, label: CODE_LANG_LABELS[l], code: generateCode(item, l, base) })) };
+    }
+    return { id, lang, label: CODE_LANG_LABELS[lang], code: generateCode(item, lang, base) };
   });
 
   app.get('/api/diff', async (req, reply) => {
@@ -505,6 +551,9 @@ export function createHookBox(opts: HookBoxOptions = {}): HookBox {
     options,
     capture,
     replay,
+    setPublicUrl(url) {
+      options.publicUrl = url;
+    },
     async listen() {
       await app.listen({ port: options.port, host: options.host });
       const addr = app.server.address();

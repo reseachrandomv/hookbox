@@ -7,6 +7,7 @@ import { createHookBox, VERSION } from './server.js';
 import { DEMO_GITHUB_SECRET, DEMO_STRIPE_SECRET, startDemo } from './demo.js';
 import { validateTarget } from './replay.js';
 import type { HookBoxEvent } from './types.js';
+import { openTunnel, type TunnelProvider } from './tunnel.js';
 
 /* ---------------- colours (no dependency) ---------------- */
 
@@ -65,9 +66,10 @@ interface CliOptions {
   db?: string;
   stripeSecret?: string;
   githubSecret?: string;
-  tunnel: boolean;
+  tunnel: boolean | TunnelProvider;
   demo: boolean;
   demoInterval: number;
+  demoCount?: number;
   bodyLimit: number;
   banner: boolean;
   log: boolean;
@@ -85,9 +87,14 @@ const program = new Command()
   .addOption(new Option('--db <file>', 'persist requests to a local SQLite file').env('HOOKBOX_DB'))
   .addOption(new Option('--stripe-secret <whsec>', 'verify Stripe-Signature headers with this signing secret').env('HOOKBOX_STRIPE_SECRET'))
   .addOption(new Option('--github-secret <secret>', 'verify X-Hub-Signature-256 headers with this secret').env('HOOKBOX_GITHUB_SECRET'))
-  .addOption(new Option('--tunnel', 'expose a public URL (requires the optional "localtunnel" package)').default(false))
+  .addOption(
+    new Option('--tunnel [provider]', 'expose a public URL: auto (localtunnel, then cloudflared), localtunnel or cloudflared')
+      .choices(['auto', 'localtunnel', 'cloudflared'])
+      .default(false),
+  )
   .addOption(new Option('--demo', 'send sample signed Stripe/GitHub/form traffic to yourself').default(false))
   .addOption(new Option('--demo-interval <ms>', 'delay between demo requests').default(2500).argParser(parsePositiveInt))
+  .addOption(new Option('--demo-count <n>', 'stop the demo after this many requests (default: run until exit)').argParser(parsePositiveInt))
   .addOption(new Option('--body-limit <bytes>', 'max request body size in bytes').default(10 * 1024 * 1024).argParser(parsePositiveInt))
   .addOption(new Option('--no-banner', 'do not print the start-up banner'))
   .addOption(new Option('--no-log', 'do not log each captured request'))
@@ -105,32 +112,6 @@ Send a test webhook:
   $ curl -X POST http://localhost:4040/wh/test -H 'content-type: application/json' -d '{"hello":"world"}'
 `,
   );
-
-/* ---------------- tunnel (optional) ---------------- */
-
-interface Tunnel {
-  url: string;
-  close(): void;
-  on?(event: string, cb: (...args: unknown[]) => void): void;
-}
-
-async function openTunnel(port: number): Promise<{ url: string | null; error: string | null; close: () => void }> {
-  const moduleName = 'localtunnel';
-  try {
-    const mod = (await import(moduleName)) as { default: (o: { port: number }) => Promise<Tunnel> };
-    const tunnel = await mod.default({ port });
-    tunnel.on?.('error', () => undefined);
-    return { url: tunnel.url, error: null, close: () => tunnel.close() };
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    const missing = e.code === 'ERR_MODULE_NOT_FOUND' || /Cannot find (package|module)/.test(e.message);
-    return {
-      url: null,
-      error: missing ? 'install it with: npm i -g localtunnel' : `tunnel failed: ${e.message}`,
-      close: () => undefined,
-    };
-  }
-}
 
 /* ---------------- banner ---------------- */
 
@@ -159,7 +140,7 @@ function printBanner(info: {
   out.push(`  ${label('Local URL')}${c.bold(c.cyan(info.localUrl))}`);
   out.push(`  ${label('Capture endpoint')}${c.green(`${info.localUrl}/wh/<anything>`)}`);
   out.push(
-    `  ${label('Public Tunnel URL')}${info.tunnelUrl ? c.bold(c.magenta(`${info.tunnelUrl}/wh/<anything>`)) : c.dim(info.tunnelNote)}`,
+    `  ${label('Public Tunnel URL')}${info.tunnelUrl ? c.bold(c.magenta(`${info.tunnelUrl}/wh/<anything>`)) + c.dim(` (${info.tunnelNote})`) : c.dim(info.tunnelNote)}`,
   );
   out.push(`  ${label('Target Forward URL')}${info.target ? c.yellow(info.target) : c.dim('off (use --target <url>)')}`);
   out.push(`  ${label('History')}${info.maxHistory} requests · ${info.persistence}`);
@@ -227,10 +208,18 @@ async function main(): Promise<void> {
   let tunnelNote = 'off (use --tunnel)';
   let closeTunnel = () => undefined as void;
   if (opts.tunnel) {
-    const t = await openTunnel(hookbox.options.port);
-    tunnelUrl = t.url;
-    closeTunnel = t.close;
-    if (t.error) tunnelNote = `unavailable (${t.error})`;
+    const provider: TunnelProvider = opts.tunnel === true ? 'auto' : opts.tunnel;
+    const localHost = opts.host === '0.0.0.0' || opts.host === '::' ? '127.0.0.1' : opts.host;
+    if (opts.banner) console.log(c.dim(`  Opening public tunnel (${provider})…`));
+    const { tunnel, errors } = await openTunnel(hookbox.options.port, provider, localHost);
+    if (tunnel) {
+      tunnelUrl = tunnel.url;
+      tunnelNote = tunnel.provider;
+      closeTunnel = () => tunnel.close();
+      hookbox.setPublicUrl(tunnel.url);
+    } else {
+      tunnelNote = `unavailable (${errors.join('; ')})`;
+    }
   }
 
   const p = hookbox.store.persistence;
@@ -278,7 +267,7 @@ async function main(): Promise<void> {
   let stopDemo = () => undefined as void;
   if (opts.demo) {
     const base = `http://${opts.host === '0.0.0.0' || opts.host === '::' ? '127.0.0.1' : opts.host}:${hookbox.options.port}`;
-    stopDemo = startDemo({ baseUrl: base, intervalMs: opts.demoInterval });
+    stopDemo = startDemo({ baseUrl: base, intervalMs: opts.demoInterval, count: opts.demoCount });
   }
 
   let shuttingDown = false;

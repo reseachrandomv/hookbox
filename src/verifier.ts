@@ -66,7 +66,13 @@ export function verifyStripe(
     return { ...base, valid: false, reason: 'Malformed Stripe-Signature header: missing or invalid timestamp (t=).' };
   }
   if (v1.length === 0) {
-    return { ...base, valid: false, reason: 'Malformed Stripe-Signature header: no v1 signature found.' };
+    return {
+      ...base,
+      valid: false,
+      reason: parts.some((p) => p.startsWith('v0='))
+        ? 'Only a v0 (test-mode legacy) signature is present; HookBox verifies v1 (HMAC-SHA256) signatures.'
+        : 'Malformed Stripe-Signature header: no v1 signature found.',
+    };
   }
   const expected = createHmac('sha256', secret).update(`${timestamp}.`, 'utf8').update(rawBody).digest('hex');
   const matched = v1.some((sig) => safeEqualHex(sig, expected));
@@ -119,15 +125,86 @@ export function verifyGitHub(
   };
 }
 
-/** Detects the provider from headers and verifies. Returns null when no known signature header is present. */
+/** Detects the provider from headers and verifies with the configured secrets. Returns null when no known signature header is present. */
 export function verifyRequest(rawBody: Buffer, headers: Headers, secrets: VerifierSecrets): VerificationResult | null {
-  const stripeSig = header(headers, 'stripe-signature');
-  if (stripeSig !== undefined) {
-    return verifyStripe(rawBody, stripeSig, secrets.stripe, secrets.stripeToleranceSec ?? 300);
-  }
+  const sig = detectSignature(headers);
+  if (!sig) return null;
+  if (sig.provider === 'stripe') return verifyStripe(rawBody, sig.value, secrets.stripe, secrets.stripeToleranceSec ?? 300);
+  return verifyGitHub(rawBody, sig.header as 'x-hub-signature-256' | 'x-hub-signature', sig.value, secrets.github);
+}
+
+export type Provider = 'stripe' | 'github';
+
+export interface DetectedSignature {
+  provider: Provider;
+  header: string;
+  value: string;
+}
+
+/** Finds the first known signature header (Stripe, GitHub sha256, GitHub sha1). */
+export function detectSignature(headers: Headers): DetectedSignature | null {
+  const stripe = header(headers, 'stripe-signature');
+  if (stripe !== undefined) return { provider: 'stripe', header: 'stripe-signature', value: stripe };
   const gh256 = header(headers, 'x-hub-signature-256');
-  if (gh256 !== undefined) return verifyGitHub(rawBody, 'x-hub-signature-256', gh256, secrets.github);
+  if (gh256 !== undefined) return { provider: 'github', header: 'x-hub-signature-256', value: gh256 };
   const gh1 = header(headers, 'x-hub-signature');
-  if (gh1 !== undefined) return verifyGitHub(rawBody, 'x-hub-signature', gh1, secrets.github);
+  if (gh1 !== undefined) return { provider: 'github', header: 'x-hub-signature', value: gh1 };
   return null;
+}
+
+export interface ManualVerification {
+  provider: Provider | null;
+  valid: boolean;
+  reason: string;
+  header: string | null;
+  /** Which provider the headers point at, independent of a forced provider. */
+  detected: Provider | null;
+}
+
+/**
+ * Verifies a stored request against a secret pasted by the user (dashboard
+ * "Verify Signature" tab). The provider is auto-detected from headers unless
+ * forced. Every outcome carries a human readable reason.
+ */
+export function verifyWithSecret(
+  rawBody: Buffer,
+  headers: Headers,
+  secret: string,
+  opts: { provider?: Provider | 'auto'; toleranceSec?: number } = {},
+): ManualVerification {
+  const detected = detectSignature(headers);
+  const wanted = opts.provider && opts.provider !== 'auto' ? opts.provider : detected?.provider ?? null;
+  if (!secret || !secret.trim()) {
+    return { provider: wanted, valid: false, reason: 'Paste a signing secret to verify this request.', header: detected?.header ?? null, detected: detected?.provider ?? null };
+  }
+  if (!wanted) {
+    return {
+      provider: null,
+      valid: false,
+      reason: 'No signature header found. Expected Stripe-Signature (Stripe) or X-Hub-Signature-256 (GitHub).',
+      header: null,
+      detected: null,
+    };
+  }
+  if (!detected || detected.provider !== wanted) {
+    const expected = wanted === 'stripe' ? 'Stripe-Signature' : 'X-Hub-Signature-256';
+    return {
+      provider: wanted,
+      valid: false,
+      reason: `Provider ${wanted} selected, but the request has no ${expected} header${detected ? ` (it carries ${detected.header} instead)` : ''}.`,
+      header: detected?.header ?? null,
+      detected: detected?.provider ?? null,
+    };
+  }
+  const trimmed = secret.trim();
+  let result: VerificationResult;
+  if (wanted === 'stripe') {
+    result = verifyStripe(rawBody, detected.value, trimmed, opts.toleranceSec ?? 300);
+    if (!result.valid && /mismatch/i.test(result.reason) && !trimmed.startsWith('whsec_')) {
+      result = { ...result, reason: `${result.reason} Note: Stripe signing secrets start with "whsec_".` };
+    }
+  } else {
+    result = verifyGitHub(rawBody, detected.header as 'x-hub-signature-256' | 'x-hub-signature', detected.value, trimmed);
+  }
+  return { provider: result.provider, valid: result.valid, reason: result.reason, header: result.header, detected: detected.provider };
 }

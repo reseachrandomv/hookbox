@@ -1,24 +1,1037 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>HookBox</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>HookBox · Webhook Inspector</title>
+  <meta name="description" content="HookBox: local webhook inspector, verifier and replay tool." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪝</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#09090b',
+            card: '#18181b',
+            line: '#27272a',
+            muted: '#a1a1aa',
+            faint: '#71717a',
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['"JetBrains Mono"', '"Fira Code"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
   <style>
-    html, body { height: 100%; margin: 0; }
-    body { display: grid; place-items: center; background: #0b0f17; color: #e5e7eb;
-           font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
-    main { max-width: 560px; padding: 32px; text-align: center; }
-    h1 { margin: 0 0 8px; font-size: 28px; }
-    code { background: #111827; padding: 2px 6px; border-radius: 4px; color: #38bdf8; }
-    p { color: #9ca3af; }
+    :root { color-scheme: dark; }
+    html, body { background: #09090b; }
+    body { font-feature-settings: "cv11", "ss01"; -webkit-font-smoothing: antialiased; }
+    ::selection { background: rgba(56, 189, 248, 0.3); }
+    .scroll-thin { scrollbar-width: thin; scrollbar-color: #3f3f46 transparent; }
+    .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll-thin::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 8px; }
+    .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+    .code { font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace; font-size: 12.5px; line-height: 1.65; tab-size: 2; font-variant-ligatures: none; }
+    .j-key { color: #7dd3fc; }
+    .j-str { color: #86efac; }
+    .j-num { color: #fcd34d; }
+    .j-bool { color: #c4b5fd; }
+    .j-null { color: #f9a8d4; }
+    .j-punc { color: #71717a; }
+    .flash { animation: flash 1.2s ease-out; }
+    @keyframes flash { from { background: rgba(16, 185, 129, 0.16); } to { background: transparent; } }
+    .pulse-dot { animation: pulse 2s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+    .fade-in { animation: fadein .16s ease-out; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .kbd { font-family: "JetBrains Mono", monospace; font-size: 10.5px; padding: 1px 5px; border: 1px solid #3f3f46; border-bottom-width: 2px; border-radius: 4px; color: #d4d4d8; background: #18181b; }
+    .diff-add { background: rgba(16, 185, 129, 0.12); }
+    .diff-del { background: rgba(244, 63, 94, 0.12); }
+    .diff-pad { background: repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(63,63,70,.25) 4px, rgba(63,63,70,.25) 8px); }
+    button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #38bdf8; outline-offset: 1px; }
   </style>
 </head>
-<body>
-  <main>
-    <h1>🪝 HookBox</h1>
-    <p>The server is running. The full dashboard UI comes in Step 3.</p>
-    <p>Send a webhook to <code>/wh/anything</code>, then browse <code>/api/requests</code>.</p>
-  </main>
+<body class="h-full text-zinc-200 font-sans">
+  <div id="app" class="h-full"></div>
+  <noscript><p style="padding:24px">HookBox needs JavaScript enabled to show the dashboard.</p></noscript>
+
+  <script type="module">
+    import { html, render, useState, useEffect, useRef, useMemo, useCallback } from 'https://cdn.jsdelivr.net/npm/htm@3.1.1/preact/standalone.module.js';
+
+    /* ================================================================
+       Helpers
+       ================================================================ */
+
+    const METHOD_STYLES = {
+      POST: 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/30',
+      GET: 'bg-sky-500/10 text-sky-400 ring-sky-500/30',
+      DELETE: 'bg-rose-500/10 text-rose-400 ring-rose-500/30',
+      PUT: 'bg-amber-500/10 text-amber-400 ring-amber-500/30',
+      PATCH: 'bg-violet-500/10 text-violet-400 ring-violet-500/30',
+      HEAD: 'bg-zinc-500/10 text-zinc-400 ring-zinc-500/30',
+      OPTIONS: 'bg-fuchsia-500/10 text-fuchsia-400 ring-fuchsia-500/30',
+    };
+    const ALL_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
+
+    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    function highlightJson(value) {
+      const text = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      return escapeHtml(text).replace(
+        /(&quot;(?:\\u[a-fA-F0-9]{4}|\\[^u]|(?!&quot;)[^\\])*?&quot;)(\s*:)?|\b(true|false)\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[{}\[\],]/g,
+        (m, str, colon, bool) => {
+          if (str) return colon ? `<span class="j-key">${str}</span><span class="j-punc">${colon}</span>` : `<span class="j-str">${str}</span>`;
+          if (bool) return `<span class="j-bool">${m}</span>`;
+          if (m === 'null') return `<span class="j-null">${m}</span>`;
+          if (/^[{}\[\],]$/.test(m)) return `<span class="j-punc">${m}</span>`;
+          return `<span class="j-num">${m}</span>`;
+        },
+      );
+    }
+
+    function formatBytes(n) {
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / 1024 / 1024).toFixed(2)} MB`;
+    }
+
+    function timeAgo(iso, now) {
+      const s = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+      if (s < 5) return 'just now';
+      if (s < 60) return `${s}s ago`;
+      const m = Math.round(s / 60);
+      if (m < 60) return `${m}m ago`;
+      const h = Math.round(m / 60);
+      if (h < 24) return `${h}h ago`;
+      return new Date(iso).toLocaleDateString();
+    }
+
+    const clockTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    function decodeBase64(b64) {
+      try {
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return bytes;
+      } catch {
+        return new Uint8Array();
+      }
+    }
+
+    function hexDump(bytes, max = 4096) {
+      const lines = [];
+      const n = Math.min(bytes.length, max);
+      for (let i = 0; i < n; i += 16) {
+        const chunk = bytes.slice(i, Math.min(i + 16, n));
+        const hex = Array.from(chunk, (b) => b.toString(16).padStart(2, '0')).join(' ');
+        const ascii = Array.from(chunk, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('');
+        lines.push(`${i.toString(16).padStart(8, '0')}  ${hex.padEnd(47)}  ${ascii}`);
+      }
+      if (bytes.length > max) lines.push(`… ${bytes.length - max} more bytes`);
+      return lines.join('\n');
+    }
+
+    async function copyText(text) {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch { /* fall through to the legacy path */ }
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+      ta.remove();
+      return ok;
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(path, {
+        ...opts,
+        headers: opts.body ? { 'content-type': 'application/json', ...(opts.headers || {}) } : opts.headers,
+      });
+      const type = res.headers.get('content-type') || '';
+      const data = type.includes('application/json') ? await res.json() : await res.text();
+      if (!res.ok) throw new Error((data && data.error) || `HTTP ${res.status}`);
+      return data;
+    }
+
+    function prettyBody(body, encoding, contentType) {
+      if (encoding === 'base64') return null;
+      if (/json/i.test(contentType || '') || /^\s*[\[{]/.test(body)) {
+        try { return JSON.stringify(JSON.parse(body), null, 2); } catch { /* not JSON */ }
+      }
+      return null;
+    }
+
+    function statusTone(status) {
+      if (status === null || status === undefined) return 'bg-rose-500/10 text-rose-400 ring-rose-500/30';
+      if (status >= 500) return 'bg-rose-500/10 text-rose-400 ring-rose-500/30';
+      if (status >= 400) return 'bg-amber-500/10 text-amber-400 ring-amber-500/30';
+      if (status >= 300) return 'bg-sky-500/10 text-sky-400 ring-sky-500/30';
+      return 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/30';
+    }
+
+    /** Snapshot used by the diff view: the parts of a request that matter. */
+    function diffView(r) {
+      const headers = {};
+      for (const k of Object.keys(r.headers).sort()) headers[k] = r.headers[k];
+      return {
+        method: r.method,
+        path: r.path,
+        query: r.query,
+        headers,
+        body: r.json !== null ? r.json : r.form !== null ? r.form : r.body,
+      };
+    }
+
+    /** Line-level LCS diff for the side-by-side view. */
+    function lineDiff(a, b) {
+      const A = a.split('\n');
+      const B = b.split('\n');
+      const n = A.length;
+      const m = B.length;
+      if (n * m > 4_000_000) {
+        const rows = [];
+        for (let i = 0; i < Math.max(n, m); i++) {
+          const l = A[i];
+          const r = B[i];
+          rows.push({ left: l ?? null, right: r ?? null, type: l === r ? 'same' : 'change' });
+        }
+        return rows;
+      }
+      const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      const rows = [];
+      let i = 0;
+      let j = 0;
+      while (i < n || j < m) {
+        if (i < n && j < m && A[i] === B[j]) { rows.push({ left: A[i], right: B[j], type: 'same' }); i++; j++; }
+        else if (j < m && (i >= n || dp[i][j + 1] >= dp[i + 1][j])) { rows.push({ left: null, right: B[j], type: 'add' }); j++; }
+        else { rows.push({ left: A[i], right: null, type: 'del' }); i++; }
+      }
+      // Pair each run of removed/added lines so changed lines sit side by side.
+      const paired = [];
+      for (let k = 0; k < rows.length; k++) {
+        if (rows[k].type === 'same') { paired.push(rows[k]); continue; }
+        const dels = [];
+        const adds = [];
+        while (k < rows.length && rows[k].type !== 'same') {
+          if (rows[k].type === 'del') dels.push(rows[k].left); else adds.push(rows[k].right);
+          k++;
+        }
+        k--;
+        const len = Math.max(dels.length, adds.length);
+        for (let x = 0; x < len; x++) {
+          const left = x < dels.length ? dels[x] : null;
+          const right = x < adds.length ? adds[x] : null;
+          paired.push({ left, right, type: left !== null && right !== null ? 'change' : left !== null ? 'del' : 'add' });
+        }
+      }
+      return paired;
+    }
+
+    const LS = {
+      get(key, fallback) { try { const v = localStorage.getItem(`hookbox:${key}`); return v === null ? fallback : JSON.parse(v); } catch { return fallback; } },
+      set(key, value) { try { localStorage.setItem(`hookbox:${key}`, JSON.stringify(value)); } catch { /* storage disabled */ } },
+    };
+
+    /* ================================================================
+       Small components
+       ================================================================ */
+
+    function MethodPill({ method, size = 'sm' }) {
+      const cls = METHOD_STYLES[method] || 'bg-zinc-500/10 text-zinc-300 ring-zinc-500/30';
+      const pad = size === 'lg' ? 'px-2.5 py-1 text-xs' : 'px-1.5 py-0.5 text-[10.5px]';
+      return html`<span class="inline-flex items-center justify-center rounded-md font-mono font-semibold tracking-wide ring-1 ring-inset ${pad} ${cls} min-w-[3.6rem]">${method}</span>`;
+    }
+
+    function StatusBadge({ status, label, title }) {
+      return html`<span title=${title || ''} class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-mono text-[10.5px] font-medium ring-1 ring-inset ${statusTone(status)}">${label ?? (status ?? 'ERR')}</span>`;
+    }
+
+    function VerifyBadge({ verification, compact }) {
+      if (!verification) return null;
+      const ok = verification.valid;
+      const name = verification.provider === 'stripe' ? 'Stripe' : 'GitHub';
+      return html`<span title=${verification.reason}
+        class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] font-medium ring-1 ring-inset ${ok ? 'bg-emerald-500/10 text-emerald-400 ring-emerald-500/30' : 'bg-rose-500/10 text-rose-400 ring-rose-500/30'}">
+        ${ok ? '✓' : '✕'} ${name}
+      </span>`;
+    }
+
+    function Kbd({ children }) { return html`<span class="kbd">${children}</span>`; }
+
+    function CopyButton({ text, label = 'Copy', onCopied, className = '' }) {
+      const [done, setDone] = useState(false);
+      return html`<button type="button"
+        onClick=${async (e) => { e.stopPropagation(); const ok = await copyText(typeof text === 'function' ? await text() : text); setDone(ok); onCopied && onCopied(ok); setTimeout(() => setDone(false), 1400); }}
+        class="inline-flex items-center gap-1.5 rounded-md border border-line bg-card px-2 py-1 text-xs text-zinc-300 hover:border-zinc-600 hover:text-white transition ${className}">
+        ${done ? html`<span class="text-emerald-400">✓</span> Copied` : html`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> ${label}`}
+      </button>`;
+    }
+
+    function CodeBlock({ code, json, className = '', maxH = '' }) {
+      const htmlStr = json ? highlightJson(code) : escapeHtml(code);
+      return html`<pre class="code scroll-thin overflow-auto whitespace-pre rounded-lg border border-line bg-[#0c0c0f] p-4 text-zinc-300 ${maxH} ${className}" dangerouslySetInnerHTML=${{ __html: htmlStr }}></pre>`;
+    }
+
+    function EmptyNote({ children }) {
+      return html`<div class="rounded-lg border border-dashed border-line px-4 py-8 text-center text-sm text-faint">${children}</div>`;
+    }
+
+    function Toasts({ toasts }) {
+      return html`<div class="pointer-events-none fixed bottom-4 right-4 z-[60] flex flex-col items-end gap-2">
+        ${toasts.map((t) => html`<div key=${t.id} class="fade-in pointer-events-auto rounded-lg border border-line bg-card/95 px-3 py-2 text-sm shadow-xl shadow-black/40 backdrop-blur ${t.tone === 'error' ? 'text-rose-300' : 'text-zinc-200'}">${t.text}</div>`)}
+      </div>`;
+    }
+
+    /* ================================================================
+       Header
+       ================================================================ */
+
+    function Header({ info, conn, count, onClear, onHelp, captureBase }) {
+      const captureUrl = `${captureBase}/wh/`;
+      return html`<header class="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-bg/80 px-3 backdrop-blur sm:px-4">
+        <div class="flex items-center gap-2">
+          <div class="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-sky-400 to-emerald-400 text-[15px] shadow-lg shadow-sky-500/20">🪝</div>
+          <span class="font-semibold tracking-tight text-white">HookBox</span>
+          <span class="hidden rounded-md border border-line px-1.5 py-0.5 font-mono text-[10px] text-faint sm:inline">v${info?.version ?? '…'}</span>
+        </div>
+        <div class="mx-1 hidden h-5 w-px bg-line md:block"></div>
+        <div class="hidden min-w-0 items-center gap-2 md:flex">
+          <span class="text-xs text-faint">Capture</span>
+          <code class="truncate rounded-md border border-line bg-card px-2 py-1 font-mono text-xs text-sky-300">${captureUrl}<span class="text-faint">*</span></code>
+          <${CopyButton} text=${captureUrl + 'test'} label="" className="!px-1.5" />
+          ${info?.publicUrl && html`<code class="hidden truncate rounded-md border border-violet-500/30 bg-violet-500/10 px-2 py-1 font-mono text-xs text-violet-300 lg:inline" title="Public tunnel">${info.publicUrl}/wh/</code>`}
+          ${info?.target && html`<span class="hidden items-center gap-1 truncate rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono text-xs text-amber-300 xl:inline-flex" title="Auto-forward target">→ ${info.target}</span>`}
+        </div>
+        <div class="ml-auto flex items-center gap-2">
+          <span class="inline-flex items-center gap-1.5 rounded-md border border-line px-2 py-1.5 text-xs text-muted sm:py-1" title=${conn.detail}>
+            <span class="h-2 w-2 rounded-full ${conn.state === 'live' ? 'bg-emerald-400 pulse-dot' : conn.state === 'connecting' ? 'bg-amber-400' : 'bg-rose-500'}"></span>
+            <span class="hidden sm:inline">${conn.state === 'live' ? `Live · ${conn.transport}` : conn.state === 'connecting' ? 'Connecting…' : 'Offline'}</span>
+          </span>
+          <span class="hidden font-mono text-xs text-faint sm:inline">${count}/${info?.maxHistory ?? '…'}</span>
+          <button type="button" onClick=${onHelp} class="hidden rounded-md border border-line px-2 py-1 text-xs text-muted hover:text-white sm:block" title="Keyboard shortcuts"><span class="font-mono">?</span></button>
+          <button type="button" onClick=${onClear} disabled=${!count}
+            class="inline-flex items-center gap-1.5 rounded-md border border-line bg-card px-2.5 py-1 text-xs text-zinc-300 transition hover:border-rose-500/50 hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-40">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
+            Clear all
+          </button>
+        </div>
+      </header>`;
+    }
+
+    /* ================================================================
+       Sidebar: live feed
+       ================================================================ */
+
+    function Sidebar({ items, total, selectedId, onSelect, query, setQuery, methods, toggleMethod, searchRef, checked, toggleCheck, onDiff, now, freshIds, hidden }) {
+      const listRef = useRef(null);
+      useEffect(() => {
+        const el = listRef.current && listRef.current.querySelector(`[data-id="${selectedId}"]`);
+        if (el) el.scrollIntoView({ block: 'nearest' });
+      }, [selectedId]);
+      return html`<aside class="${hidden ? 'hidden md:flex' : 'flex'} w-full min-h-0 flex-col border-line md:w-[380px] md:shrink-0 md:border-r lg:w-[420px]">
+        <div class="space-y-2 border-b border-line p-3">
+          <label class="relative block">
+            <svg class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-faint" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+            <input ref=${searchRef} value=${query} onInput=${(e) => setQuery(e.currentTarget.value)}
+              placeholder="Filter by path, body, header, id…"
+              class="w-full rounded-lg border border-line bg-card py-2 pl-8 pr-9 text-sm text-zinc-200 placeholder:text-faint focus:border-zinc-600 focus:outline-none" />
+            <span class="absolute right-2 top-1/2 -translate-y-1/2"><${Kbd}>/<//></span>
+          </label>
+          <div class="flex flex-wrap items-center gap-1">
+            ${ALL_METHODS.map((m) => {
+              const on = methods.includes(m);
+              return html`<button type="button" key=${m} onClick=${() => toggleMethod(m)}
+                class="rounded-md px-1.5 py-0.5 font-mono text-[10.5px] font-semibold ring-1 ring-inset transition ${on ? METHOD_STYLES[m] : 'text-faint ring-line hover:text-zinc-300'}">${m}</button>`;
+            })}
+            ${methods.length > 0 && html`<button type="button" onClick=${() => toggleMethod(null)} class="ml-1 text-[11px] text-faint hover:text-zinc-300">reset</button>`}
+          </div>
+        </div>
+        ${checked.length > 0 && html`<div class="fade-in flex items-center justify-between gap-2 border-b border-line bg-sky-500/5 px-3 py-2 text-xs">
+          <span class="text-sky-300">${checked.length} selected ${checked.length < 2 ? '· pick one more to diff' : ''}</span>
+          <div class="flex items-center gap-2">
+            <button type="button" onClick=${() => toggleCheck(null)} class="text-faint hover:text-zinc-200">Clear</button>
+            <button type="button" disabled=${checked.length !== 2} onClick=${onDiff}
+              class="rounded-md bg-sky-500 px-2 py-1 font-medium text-black transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-40">Compare JSON</button>
+          </div>
+        </div>`}
+        <div ref=${listRef} class="scroll-thin min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Captured requests">
+          ${items.length === 0 && total > 0 && html`<div class="p-6 text-center text-sm text-faint">No requests match this filter.</div>`}
+          ${items.map((r) => {
+            const active = r.id === selectedId;
+            const isChecked = checked.includes(r.id);
+            const result = r.lastReplay || r.lastForward;
+            return html`<div key=${r.id} data-id=${r.id} role="option" aria-selected=${active}
+              onClick=${() => onSelect(r.id)}
+              class="group relative flex cursor-pointer items-start gap-2.5 border-b border-line/70 px-3 py-2.5 transition ${active ? 'bg-zinc-800/60' : 'hover:bg-zinc-900'} ${freshIds.has(r.id) ? 'flash' : ''}">
+              ${active && html`<span class="absolute inset-y-0 left-0 w-0.5 bg-sky-400"></span>`}
+              <input type="checkbox" checked=${isChecked} title="Select for diff (x)"
+                onClick=${(e) => { e.stopPropagation(); toggleCheck(r.id); }}
+                class="mt-1 h-3.5 w-3.5 shrink-0 cursor-pointer rounded border-zinc-600 bg-transparent accent-sky-400 ${isChecked ? '' : 'opacity-40 group-hover:opacity-100'}" />
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <${MethodPill} method=${r.method} />
+                  <span class="truncate font-mono text-[12.5px] text-zinc-200" title=${r.url}>${r.path}</span>
+                </div>
+                <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-faint">
+                  <span title=${new Date(r.timestamp).toLocaleString()}>${timeAgo(r.timestamp, now)}</span>
+                  <span>·</span>
+                  <span>${formatBytes(r.size)}</span>
+                  ${r.contentType && html`<span class="hidden truncate sm:inline">· ${r.contentType.split(';')[0]}</span>`}
+                  <span class="ml-auto flex items-center gap-1">
+                    <${VerifyBadge} verification=${r.verification} compact />
+                    ${result && html`<${StatusBadge} status=${result.status} label=${result.status === null ? 'ERR' : String(result.status)} title=${`${result.kind === 'replay' ? 'Replay' : 'Forward'} → ${result.target} (${result.durationMs} ms)`} />`}
+                  </span>
+                </div>
+              </div>
+            </div>`;
+          })}
+        </div>
+        <div class="hidden items-center justify-between border-t border-line px-3 py-2 text-[11px] text-faint md:flex">
+          <span><${Kbd}>j<//> <${Kbd}>k<//> navigate · <${Kbd}>x<//> select</span>
+          <span><${Kbd}>r<//> replay · <${Kbd}>c<//> cURL</span>
+        </div>
+      </aside>`;
+    }
+
+    /* ================================================================
+       Empty state
+       ================================================================ */
+
+    function EmptyState({ captureBase }) {
+      const cmd = `curl -X POST ${captureBase}/wh/test \\\n  -H 'content-type: application/json' \\\n  -d '{"event":"order.created","amount":4200}'`;
+      return html`<div class="flex h-full items-center justify-center p-6">
+        <div class="fade-in w-full max-w-lg text-center">
+          <div class="relative mx-auto mb-6 grid h-16 w-16 place-items-center rounded-2xl border border-line bg-card text-3xl">
+            🪝
+            <span class="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-emerald-400 pulse-dot"></span>
+          </div>
+          <h2 class="text-lg font-semibold text-white">Waiting for webhooks…</h2>
+          <p class="mt-1 text-sm text-muted">Point any provider at <code class="font-mono text-sky-300">${`${captureBase}/wh/<anything>`}</code>. Requests appear here instantly.</p>
+          <div class="relative mt-6 text-left">
+            <${CodeBlock} code=${cmd} />
+            <div class="absolute right-2 top-2"><${CopyButton} text=${cmd} /></div>
+          </div>
+          <p class="mt-5 text-sm text-faint">No traffic handy? Restart with <code class="rounded border border-line bg-card px-1.5 py-0.5 font-mono text-emerald-300">npx hookbox --demo</code> to stream signed Stripe and GitHub sample events.</p>
+        </div>
+      </div>`;
+    }
+
+    /* ================================================================
+       Detail tabs
+       ================================================================ */
+
+    function JsonTab({ req }) {
+      if (req.json !== null) {
+        return html`<div class="relative"><${CodeBlock} code=${JSON.stringify(req.json, null, 2)} json /><div class="absolute right-2 top-2"><${CopyButton} text=${JSON.stringify(req.json, null, 2)} /></div></div>`;
+      }
+      if (req.form) {
+        return html`<div class="space-y-3">
+          <p class="text-xs text-faint">Form-encoded body, shown as JSON:</p>
+          <${CodeBlock} code=${JSON.stringify(req.form, null, 2)} json />
+        </div>`;
+      }
+      if (req.size === 0) return html`<${EmptyNote}>This request has no body.<//>`;
+      return html`<${EmptyNote}>The body is not JSON${req.contentType ? ` (${req.contentType})` : ''}. See the <b class="text-zinc-300">Raw Body</b> tab.<//>`;
+    }
+
+    function KeyValueTable({ title, data, empty }) {
+      const entries = Object.entries(data || {});
+      return html`<section>
+        <div class="mb-2 flex items-center justify-between">
+          <h3 class="text-xs font-medium uppercase tracking-wider text-faint">${title} <span class="ml-1 text-zinc-600">${entries.length}</span></h3>
+          ${entries.length > 0 && html`<${CopyButton} text=${JSON.stringify(data, null, 2)} label="JSON" />`}
+        </div>
+        ${entries.length === 0
+          ? html`<${EmptyNote}>${empty}<//>`
+          : html`<div class="overflow-hidden rounded-lg border border-line">
+              <table class="w-full table-fixed text-left">
+                <tbody>
+                  ${entries.map(([k, v]) => html`<tr key=${k} class="border-b border-line/70 last:border-0 odd:bg-card/40">
+                    <td class="w-[38%] break-all px-3 py-2 align-top font-mono text-[12px] text-sky-300">${k}</td>
+                    <td class="break-all px-3 py-2 font-mono text-[12px] text-zinc-300">${Array.isArray(v) ? v.join(', ') : v}</td>
+                  </tr>`)}
+                </tbody>
+              </table>
+            </div>`}
+      </section>`;
+    }
+
+    function HeadersTab({ req }) {
+      return html`<div class="space-y-6">
+        <${KeyValueTable} title="Headers" data=${req.headers} empty="No headers." />
+        <${KeyValueTable} title="Query parameters" data=${req.query} empty="No query parameters." />
+      </div>`;
+    }
+
+    function RawTab({ req }) {
+      const [view, setView] = useState('text');
+      const isBinary = req.bodyEncoding === 'base64';
+      const bytes = useMemo(() => (isBinary ? decodeBase64(req.body) : new TextEncoder().encode(req.body)), [req.id]);
+      if (req.size === 0) return html`<${EmptyNote}>This request has no body.<//>`;
+      const text = view === 'hex' ? hexDump(bytes) : view === 'pretty' ? (prettyBody(req.body, req.bodyEncoding, req.contentType) ?? req.body) : req.body;
+      return html`<div class="space-y-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="inline-flex rounded-lg border border-line bg-card p-0.5 text-xs">
+            ${[['text', isBinary ? 'Base64' : 'Raw'], ...(isBinary ? [] : [['pretty', 'Pretty']]), ['hex', 'Hex']].map(([k, label]) => html`<button type="button" key=${k} onClick=${() => setView(k)}
+              class="rounded-md px-2.5 py-1 transition ${view === k ? 'bg-zinc-700 text-white' : 'text-muted hover:text-white'}">${label}</button>`)}
+          </div>
+          <span class="text-xs text-faint">${formatBytes(req.size)} · ${isBinary ? 'binary (stored as base64)' : 'UTF-8'}</span>
+          <div class="ml-auto"><${CopyButton} text=${req.body} label=${isBinary ? 'Copy base64' : 'Copy'} /></div>
+        </div>
+        <${CodeBlock} code=${text} json=${view === 'pretty'} className="whitespace-pre-wrap break-all" />
+      </div>`;
+    }
+
+    function VerifyTab({ req, toast }) {
+      const detected = req.headers['stripe-signature'] ? 'stripe' : (req.headers['x-hub-signature-256'] || req.headers['x-hub-signature']) ? 'github' : null;
+      const [provider, setProvider] = useState('auto');
+      const [secret, setSecret] = useState(() => LS.get(`secret:${detected || 'none'}`, ''));
+      const [busy, setBusy] = useState(false);
+      const [result, setResult] = useState(null);
+      useEffect(() => { setResult(null); }, [req.id]);
+      const run = async (e) => {
+        e && e.preventDefault();
+        setBusy(true);
+        try {
+          const r = await api(`/api/requests/${req.id}/verify`, { method: 'POST', body: JSON.stringify({ secret, provider }) });
+          setResult(r);
+          if (secret) LS.set(`secret:${r.provider || detected || 'none'}`, secret);
+        } catch (err) { toast(err.message, 'error'); }
+        finally { setBusy(false); }
+      };
+      return html`<div class="space-y-5">
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+          <span class="text-faint">Detected provider:</span>
+          ${detected
+            ? html`<span class="rounded-md border border-line bg-card px-2 py-0.5 font-medium text-zinc-200">${detected === 'stripe' ? 'Stripe · Stripe-Signature' : `GitHub · ${req.headers['x-hub-signature-256'] ? 'X-Hub-Signature-256' : 'X-Hub-Signature'}`}</span>`
+            : html`<span class="text-zinc-400">none. No Stripe-Signature or X-Hub-Signature-256 header.</span>`}
+        </div>
+        ${req.verification && html`<div class="rounded-lg border border-line bg-card/60 p-3 text-sm">
+          <div class="mb-1 text-xs uppercase tracking-wider text-faint">Checked on arrival with the CLI secret</div>
+          <div class="flex items-start gap-2"><${VerifyBadge} verification=${req.verification} /><span class="text-zinc-300">${req.verification.reason}</span></div>
+        </div>`}
+        <form onSubmit=${run} class="space-y-3">
+          <div class="grid gap-3 sm:grid-cols-[150px_1fr]">
+            <select value=${provider} onChange=${(e) => setProvider(e.currentTarget.value)}
+              class="rounded-lg border border-line bg-card px-3 py-2 text-sm text-zinc-200 focus:outline-none">
+              <option value="auto">Auto-detect</option>
+              <option value="stripe">Stripe</option>
+              <option value="github">GitHub</option>
+            </select>
+            <input type="password" autocomplete="off" spellcheck="false" value=${secret} onInput=${(e) => setSecret(e.currentTarget.value)}
+              placeholder=${detected === 'github' ? 'GitHub webhook secret' : 'whsec_… signing secret'}
+              class="w-full rounded-lg border border-line bg-card px-3 py-2 font-mono text-sm text-zinc-200 placeholder:text-faint focus:border-zinc-600 focus:outline-none" />
+          </div>
+          <div class="flex items-center gap-3">
+            <button type="submit" disabled=${busy}
+              class="rounded-lg bg-white px-3.5 py-2 text-sm font-medium text-black transition hover:bg-zinc-200 disabled:opacity-50">${busy ? 'Verifying…' : 'Verify signature'}</button>
+            <span class="text-xs text-faint">Secrets stay in this browser (localStorage) and are only sent to your local HookBox.</span>
+          </div>
+        </form>
+        ${result && html`<div class="fade-in rounded-lg border p-4 ${result.valid ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-rose-500/40 bg-rose-500/5'}">
+          <div class="flex items-center gap-2 font-medium ${result.valid ? 'text-emerald-300' : 'text-rose-300'}">
+            <span class="grid h-6 w-6 place-items-center rounded-full ${result.valid ? 'bg-emerald-500/20' : 'bg-rose-500/20'}">${result.valid ? '✓' : '✕'}</span>
+            ${result.valid ? 'Signature valid' : 'Signature invalid'}
+            ${result.provider && html`<span class="text-xs font-normal text-faint">· ${result.provider}${result.header ? ` · ${result.header}` : ''}</span>`}
+          </div>
+          <p class="mt-2 text-sm text-zinc-300">${result.reason}</p>
+        </div>`}
+      </div>`;
+    }
+
+    function ForwardResultView({ result, title }) {
+      const [showHeaders, setShowHeaders] = useState(false);
+      const pretty = result.bodyEncoding === 'utf8' ? prettyBody(result.body, result.bodyEncoding, result.headers['content-type']) : null;
+      return html`<div class="fade-in space-y-3 rounded-lg border border-line bg-card/50 p-4">
+        <div class="flex flex-wrap items-center gap-2 text-sm">
+          <span class="text-xs uppercase tracking-wider text-faint">${title}</span>
+          <${StatusBadge} status=${result.status} label=${result.status === null ? 'ERROR' : `${result.status} ${result.statusText}`} />
+          <span class="font-mono text-xs text-zinc-300">${result.durationMs} ms</span>
+          <span class="font-mono text-xs text-faint">${result.method}</span>
+          <span class="truncate font-mono text-xs text-faint" title=${result.target}>→ ${result.target}</span>
+          <span class="ml-auto text-xs text-faint">${clockTime(result.at)}</span>
+        </div>
+        ${result.error && html`<div class="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 font-mono text-xs text-rose-300">${result.error}</div>`}
+        ${result.status !== null && html`<div>
+          <button type="button" onClick=${() => setShowHeaders(!showHeaders)} class="text-xs text-muted hover:text-white">${showHeaders ? '▾' : '▸'} Response headers (${Object.keys(result.headers).length})</button>
+          ${showHeaders && html`<div class="mt-2"><${KeyValueTable} title="Response headers" data=${result.headers} empty="None." /></div>`}
+        </div>`}
+        ${result.status !== null && (result.size === 0
+          ? html`<p class="text-xs text-faint">Empty response body.</p>`
+          : html`<${CodeBlock} code=${pretty ?? result.body} json=${pretty !== null} maxH="max-h-96" className="whitespace-pre-wrap break-all" />`)}
+      </div>`;
+    }
+
+    function ReplayTab({ req, info, toast, replayRequest, onReplayConsumed }) {
+      const [target, setTarget] = useState(() => LS.get('replayTarget', '') || info?.target || 'http://localhost:3000/api/webhooks');
+      const [method, setMethod] = useState('');
+      const [busy, setBusy] = useState(false);
+      const [elapsed, setElapsed] = useState(0);
+      const [error, setError] = useState(null);
+      const timer = useRef(null);
+      const send = useCallback(async () => {
+        if (busy) return;
+        setBusy(true);
+        setError(null);
+        const started = performance.now();
+        setElapsed(0);
+        timer.current = setInterval(() => setElapsed(Math.round(performance.now() - started)), 31);
+        LS.set('replayTarget', target);
+        try {
+          const body = { target };
+          if (method) body.method = method;
+          await api(`/api/requests/${req.id}/replay`, { method: 'POST', body: JSON.stringify(body) });
+        } catch (err) {
+          setError(err.message);
+          toast(err.message, 'error');
+        } finally {
+          clearInterval(timer.current);
+          setElapsed(Math.round(performance.now() - started));
+          setBusy(false);
+        }
+      }, [busy, target, method, req.id]);
+      useEffect(() => () => clearInterval(timer.current), []);
+      useEffect(() => {
+        if (replayRequest && replayRequest.id === req.id) { onReplayConsumed(); send(); }
+      }, [replayRequest]);
+      return html`<div class="space-y-5">
+        <form onSubmit=${(e) => { e.preventDefault(); send(); }} class="flex flex-col gap-2 sm:flex-row">
+          <select value=${method} onChange=${(e) => setMethod(e.currentTarget.value)} title="HTTP method"
+            class="rounded-lg border border-line bg-card px-2 py-2 font-mono text-xs text-zinc-200 focus:outline-none sm:w-28">
+            <option value="">${req.method}</option>
+            ${ALL_METHODS.filter((m) => m !== req.method).map((m) => html`<option value=${m}>${m}</option>`)}
+          </select>
+          <input value=${target} onInput=${(e) => setTarget(e.currentTarget.value)} spellcheck="false"
+            placeholder="http://localhost:3000/api/webhooks/stripe"
+            class="min-w-0 flex-1 rounded-lg border border-line bg-card px-3 py-2 font-mono text-sm text-zinc-200 placeholder:text-faint focus:border-zinc-600 focus:outline-none" />
+          <button type="submit" disabled=${busy || !target}
+            class="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-black transition hover:bg-emerald-400 disabled:opacity-50">
+            ${busy ? html`<span class="h-3 w-3 animate-spin rounded-full border-2 border-black/30 border-t-black"></span> Sending` : html`<span>↻</span> Replay`}
+            <span class="hidden sm:inline"><${Kbd}>r<//></span>
+          </button>
+        </form>
+        <div class="flex items-center gap-3 text-xs text-faint">
+          <span>Latency</span>
+          <span class="font-mono text-base tabular-nums ${busy ? 'text-amber-300' : 'text-zinc-200'}">${elapsed} ms</span>
+          <span>· sends the original method${method ? ` (overridden to ${method})` : ''}, headers (minus hop-by-hop) and the exact raw body.</span>
+        </div>
+        ${error && !req.lastReplay && html`<div class="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-300">${error}</div>`}
+        ${req.lastReplay ? html`<${ForwardResultView} result=${req.lastReplay} title="Last replay" />` : html`<${EmptyNote}>Replay this request to your local server and the response appears here.<//>`}
+        ${req.lastForward && html`<${ForwardResultView} result=${req.lastForward} title="Auto-forward (--target)" />`}
+      </div>`;
+    }
+
+    function CodeTab({ req, info, toast }) {
+      const [snippets, setSnippets] = useState(null);
+      const [lang, setLang] = useState(() => LS.get('codeLang', 'curl'));
+      const replayTarget = LS.get('replayTarget', '') || info?.target || '';
+      const [dest, setDest] = useState(() => (replayTarget ? LS.get('codeDest', 'hookbox') : 'hookbox'));
+      const [error, setError] = useState(null);
+      useEffect(() => {
+        let alive = true;
+        setSnippets(null);
+        setError(null);
+        const qs = dest === 'target' && replayTarget ? `&target=${encodeURIComponent(replayTarget)}` : '';
+        api(`/api/requests/${req.id}/code?lang=all${qs}`).then((d) => alive && setSnippets(d.snippets)).catch((e) => alive && setError(e.message));
+        return () => { alive = false; };
+      }, [req.id, dest]);
+      if (error) return html`<${EmptyNote}>${error}<//>`;
+      if (!snippets) return html`<div class="h-40 animate-pulse rounded-lg border border-line bg-card/40"></div>`;
+      const current = snippets.find((s) => s.lang === lang) || snippets[0];
+      return html`<div class="space-y-3">
+        <div class="flex flex-wrap items-center gap-1">
+          ${snippets.map((s) => html`<button type="button" key=${s.lang} onClick=${() => { setLang(s.lang); LS.set('codeLang', s.lang); }}
+            class="rounded-md px-2.5 py-1 text-xs transition ${s.lang === current.lang ? 'bg-zinc-700 text-white' : 'text-muted hover:bg-zinc-800 hover:text-white'}">${s.label}</button>`)}
+          <div class="ml-auto flex items-center gap-2">
+            ${replayTarget && html`<select value=${dest} onChange=${(e) => { setDest(e.currentTarget.value); LS.set('codeDest', e.currentTarget.value); }} title="Where the snippet sends the request"
+              class="max-w-[220px] rounded-md border border-line bg-card px-2 py-1 text-xs text-zinc-300 focus:outline-none">
+              <option value="hookbox">Send to HookBox URL</option>
+              <option value="target">Send to ${replayTarget}</option>
+            </select>`}
+            <${CopyButton} text=${current.code} label=${`Copy ${current.label}`} onCopied=${(ok) => toast(ok ? `${current.label} copied` : 'Copy failed', ok ? 'info' : 'error')} />
+          </div>
+        </div>
+        <${CodeBlock} code=${current.code} />
+      </div>`;
+    }
+
+    const TABS = [
+      ['json', 'Formatted JSON'],
+      ['headers', 'Headers'],
+      ['raw', 'Raw Body'],
+      ['verify', 'Verify Signature'],
+      ['replay', 'Replay'],
+      ['code', 'Code'],
+    ];
+
+    function Detail({ req, info, tab, setTab, toast, replayRequest, onReplayConsumed, onBack, captureBase }) {
+      const fullUrl = `${captureBase}${req.url}`;
+      const result = req.lastReplay || req.lastForward;
+      return html`<section class="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div class="border-b border-line px-4 pb-0 pt-4 sm:px-6">
+          <div class="flex items-start gap-3">
+            <button type="button" onClick=${onBack} class="mt-0.5 rounded-md border border-line px-2 py-1 text-xs text-muted md:hidden">← Back</button>
+            <${MethodPill} method=${req.method} size="lg" />
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <h1 class="truncate font-mono text-[15px] text-white" title=${fullUrl}>${req.url}</h1>
+                <${CopyButton} text=${fullUrl} label="" className="!px-1.5 shrink-0" />
+              </div>
+              <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-faint">
+                <span>${new Date(req.timestamp).toLocaleString()}</span>
+                <span class="font-mono">${req.ip}</span>
+                <span>${formatBytes(req.size)}</span>
+                ${req.contentType && html`<span class="font-mono">${req.contentType}</span>`}
+                <span class="font-mono text-zinc-600" title="Request id">#${req.seq} · ${req.id.slice(0, 8)}</span>
+                <${VerifyBadge} verification=${req.verification} />
+                ${result && html`<${StatusBadge} status=${result.status} label=${`${result.kind} ${result.status ?? 'ERR'} · ${result.durationMs}ms`} />`}
+              </div>
+            </div>
+          </div>
+          <nav class="scroll-thin -mb-px mt-4 flex gap-1 overflow-x-auto" role="tablist">
+            ${TABS.map(([k, label], i) => html`<button type="button" key=${k} role="tab" aria-selected=${tab === k} onClick=${() => setTab(k)}
+              class="shrink-0 border-b-2 px-3 py-2 text-[13px] transition ${tab === k ? 'border-sky-400 text-white' : 'border-transparent text-muted hover:text-zinc-200'}">
+              ${label}<span class="ml-1.5 hidden text-[10px] text-zinc-600 lg:inline">${i + 1}</span>
+            </button>`)}
+          </nav>
+        </div>
+        <div class="scroll-thin min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+          <div class="mx-auto max-w-5xl">
+            ${tab === 'json' && html`<${JsonTab} req=${req} />`}
+            ${tab === 'headers' && html`<${HeadersTab} req=${req} />`}
+            ${tab === 'raw' && html`<${RawTab} key=${req.id} req=${req} />`}
+            ${tab === 'verify' && html`<${VerifyTab} key=${req.id} req=${req} toast=${toast} />`}
+            ${tab === 'replay' && html`<${ReplayTab} key=${req.id} req=${req} info=${info} toast=${toast} replayRequest=${replayRequest} onReplayConsumed=${onReplayConsumed} />`}
+            ${tab === 'code' && html`<${CodeTab} req=${req} info=${info} toast=${toast} />`}
+          </div>
+        </div>
+      </section>`;
+    }
+
+    /* ================================================================
+       Modals
+       ================================================================ */
+
+    function Modal({ title, onClose, children, wide }) {
+      useEffect(() => {
+        const prev = document.activeElement;
+        return () => prev && prev.focus && prev.focus();
+      }, []);
+      return html`<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-2 backdrop-blur-sm sm:p-6" onClick=${onClose}>
+        <div class="fade-in flex max-h-full w-full ${wide ? 'max-w-7xl' : 'max-w-lg'} flex-col overflow-hidden rounded-xl border border-line bg-[#0f0f12] shadow-2xl shadow-black/60" onClick=${(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+          <div class="flex items-center justify-between border-b border-line px-4 py-3">
+            <h2 class="text-sm font-semibold text-white">${title}</h2>
+            <button type="button" onClick=${onClose} class="rounded-md px-2 py-1 text-xs text-muted hover:bg-zinc-800 hover:text-white">Esc ✕</button>
+          </div>
+          ${children}
+        </div>
+      </div>`;
+    }
+
+    function DiffModal({ a, b, onClose }) {
+      const [summary, setSummary] = useState(null);
+      useEffect(() => { api(`/api/diff?a=${a.id}&b=${b.id}`).then(setSummary).catch(() => setSummary(null)); }, [a.id, b.id]);
+      const rows = useMemo(() => lineDiff(JSON.stringify(diffView(a), null, 2), JSON.stringify(diffView(b), null, 2)), [a.id, b.id]);
+      const cell = (text, type, side) => {
+        const bg = text === null ? 'diff-pad' : type === 'same' ? '' : (side === 'left' ? 'diff-del' : 'diff-add');
+        const mark = text === null || type === 'same' ? ' ' : side === 'left' ? '−' : '+';
+        return html`<div class="flex h-full min-h-[1.65em] ${bg}"><span class="w-5 shrink-0 select-none text-center ${side === 'left' ? 'text-rose-400' : 'text-emerald-400'}">${mark}</span><span class="whitespace-pre-wrap break-all pr-3" dangerouslySetInnerHTML=${{ __html: text === null ? '' : highlightJson(text) }}></span></div>`;
+      };
+      const head = (r, label) => html`<div class="flex items-center gap-2 border-b border-line bg-card/60 px-3 py-2">
+        <span class="text-[10px] uppercase tracking-wider text-faint">${label}</span>
+        <${MethodPill} method=${r.method} />
+        <span class="truncate font-mono text-xs text-zinc-300">${r.path}</span>
+        <span class="ml-auto font-mono text-[11px] text-faint">#${r.seq} · ${clockTime(r.timestamp)}</span>
+      </div>`;
+      return html`<${Modal} title="JSON Diff" onClose=${onClose} wide>
+        <div class="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2 text-xs">
+          ${summary
+            ? summary.identical
+              ? html`<span class="text-emerald-300">Identical (ignoring volatile headers such as date and content-length)</span>`
+              : html`<span class="text-emerald-400">+${summary.summary.added} added</span><span class="text-rose-400">−${summary.summary.removed} removed</span><span class="text-amber-300">~${summary.summary.changed} changed</span>
+                <span class="hidden truncate text-faint md:inline">· ${summary.changes.slice(0, 6).map((c) => c.path).join(', ')}${summary.changes.length > 6 ? ' …' : ''}</span>`
+            : html`<span class="text-faint">Comparing…</span>`}
+        </div>
+        <div class="scroll-thin min-h-0 flex-1 overflow-auto">
+          <div class="grid min-w-[720px] grid-cols-2">
+            <div class="sticky top-0 z-10 border-r border-line">${head(a, 'A')}</div>
+            <div class="sticky top-0 z-10">${head(b, 'B')}</div>
+            ${rows.map((r, i) => html`
+              <div key=${`l${i}`} class="code border-r border-line text-zinc-300 ${i === 0 ? 'pt-2' : ''}">${cell(r.left, r.type, 'left')}</div>
+              <div key=${`r${i}`} class="code text-zinc-300 ${i === 0 ? 'pt-2' : ''}">${cell(r.right, r.type, 'right')}</div>`)}
+          </div>
+        </div>
+      <//>`;
+    }
+
+    function HelpModal({ onClose }) {
+      const rows = [
+        [['j', '↓'], 'Next request'],
+        [['k', '↑'], 'Previous request'],
+        [['/'], 'Search / filter'],
+        [['r'], 'Replay selected request'],
+        [['c'], 'Copy as cURL'],
+        [['x'], 'Select for diff'],
+        [['d'], 'Open JSON diff (2 selected)'],
+        [['1–6'], 'Switch tab'],
+        [['Esc'], 'Close modal / clear search'],
+        [['?'], 'Show this help'],
+      ];
+      return html`<${Modal} title="Keyboard shortcuts" onClose=${onClose}>
+        <div class="divide-y divide-line">
+          ${rows.map(([keys, label]) => html`<div class="flex items-center justify-between px-4 py-2.5 text-sm">
+            <span class="text-zinc-300">${label}</span>
+            <span class="flex gap-1">${keys.map((k) => html`<${Kbd}>${k}<//>`)}</span>
+          </div>`)}
+        </div>
+      <//>`;
+    }
+
+    /* ================================================================
+       App
+       ================================================================ */
+
+    function useRealtime(handlers) {
+      const [conn, setConn] = useState({ state: 'connecting', transport: '', detail: '' });
+      const ref = useRef(handlers);
+      ref.current = handlers;
+      useEffect(() => {
+        let ws = null;
+        let es = null;
+        let retry = null;
+        let attempts = 0;
+        let stopped = false;
+        const dispatch = (msg) => ref.current(msg);
+
+        const startSse = () => {
+          if (stopped || !window.EventSource) return;
+          es = new EventSource('/api/events');
+          es.addEventListener('hello', (e) => { setConn({ state: 'live', transport: 'SSE', detail: 'Server-Sent Events fallback' }); dispatch({ type: 'hello', ...JSON.parse(e.data) }); });
+          ['request.created', 'request.updated', 'request.removed', 'requests.cleared'].forEach((t) => es.addEventListener(t, (e) => dispatch(JSON.parse(e.data))));
+          es.onerror = () => setConn({ state: 'connecting', transport: 'SSE', detail: 'Reconnecting (SSE)…' });
+        };
+
+        const startWs = () => {
+          if (stopped) return;
+          const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+          let opened = false;
+          try { ws = new WebSocket(`${proto}://${location.host}/api/ws`); } catch { startSse(); return; }
+          ws.onopen = () => { opened = true; attempts = 0; setConn({ state: 'live', transport: 'WebSocket', detail: 'Connected over WebSocket' }); };
+          ws.onmessage = (e) => { try { dispatch(JSON.parse(e.data)); } catch { /* ignore malformed frames */ } };
+          ws.onclose = () => {
+            if (stopped) return;
+            attempts += 1;
+            if (!opened && attempts >= 2) { setConn({ state: 'connecting', transport: 'SSE', detail: 'WebSocket unavailable, using SSE' }); startSse(); return; }
+            setConn({ state: 'connecting', transport: 'WebSocket', detail: 'Reconnecting…' });
+            retry = setTimeout(() => { dispatch({ type: 'resync' }); startWs(); }, Math.min(5000, 500 * attempts));
+          };
+        };
+        startWs();
+        return () => { stopped = true; clearTimeout(retry); ws && ws.close(); es && es.close(); };
+      }, []);
+      return conn;
+    }
+
+    function App() {
+      const [info, setInfo] = useState(null);
+      const [requests, setRequests] = useState([]);
+      const [loaded, setLoaded] = useState(false);
+      const [selectedId, setSelectedId] = useState(null);
+      const [tab, setTab] = useState(() => LS.get('tab', 'json'));
+      const [query, setQuery] = useState('');
+      const [methods, setMethods] = useState([]);
+      const [checked, setChecked] = useState([]);
+      const [diffOpen, setDiffOpen] = useState(false);
+      const [helpOpen, setHelpOpen] = useState(false);
+      const [toasts, setToasts] = useState([]);
+      const [replayRequest, setReplayRequest] = useState(null);
+      const [mobileDetail, setMobileDetail] = useState(false);
+      const [now, setNow] = useState(Date.now());
+      const [freshIds, setFreshIds] = useState(new Set());
+      const searchRef = useRef(null);
+      const captureBase = location.origin;
+
+      const toast = useCallback((text, tone = 'info') => {
+        const id = Math.random().toString(36).slice(2);
+        setToasts((t) => [...t.slice(-3), { id, text, tone }]);
+        setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2600);
+      }, []);
+
+      const load = useCallback(async () => {
+        try {
+          const [i, list] = await Promise.all([api('/api/info'), api('/api/requests')]);
+          setInfo(i);
+          setRequests(list.requests);
+          setSelectedId((cur) => (cur && list.requests.some((r) => r.id === cur) ? cur : list.requests[0]?.id ?? null));
+        } catch (err) { toast(`Could not load requests: ${err.message}`, 'error'); }
+        finally { setLoaded(true); }
+      }, []);
+
+      useEffect(() => { load(); }, []);
+      useEffect(() => { const t = setInterval(() => setNow(Date.now()), 5000); return () => clearInterval(t); }, []);
+      useEffect(() => { LS.set('tab', tab); }, [tab]);
+
+      const conn = useRealtime((msg) => {
+        switch (msg.type) {
+          case 'hello':
+            setInfo((i) => (i ? { ...i, ...msg, count: msg.count } : i));
+            break;
+          case 'resync':
+            load();
+            break;
+          case 'request.created':
+            setRequests((rs) => (rs.some((r) => r.id === msg.request.id) ? rs : [msg.request, ...rs]));
+            setSelectedId((cur) => cur ?? msg.request.id);
+            setFreshIds((s) => { const n = new Set(s); n.add(msg.request.id); return n; });
+            setTimeout(() => setFreshIds((s) => { const n = new Set(s); n.delete(msg.request.id); return n; }), 1300);
+            break;
+          case 'request.updated':
+            setRequests((rs) => rs.map((r) => (r.id === msg.request.id ? msg.request : r)));
+            break;
+          case 'request.removed':
+            setRequests((rs) => rs.filter((r) => !msg.ids.includes(r.id)));
+            setChecked((c) => c.filter((id) => !msg.ids.includes(id)));
+            setSelectedId((cur) => (cur && msg.ids.includes(cur) ? null : cur));
+            break;
+          case 'requests.cleared':
+            setRequests([]);
+            setChecked([]);
+            setSelectedId(null);
+            break;
+        }
+      });
+
+      const filtered = useMemo(() => {
+        const q = query.trim().toLowerCase();
+        return requests.filter((r) => {
+          if (methods.length && !methods.includes(r.method)) return false;
+          if (!q) return true;
+          if (r.url.toLowerCase().includes(q) || r.id.startsWith(q) || r.method.toLowerCase() === q) return true;
+          if (r.bodyEncoding === 'utf8' && r.body.toLowerCase().includes(q)) return true;
+          return Object.entries(r.headers).some(([k, v]) => `${k}: ${v}`.toLowerCase().includes(q));
+        });
+      }, [requests, query, methods]);
+
+      useEffect(() => {
+        if (!selectedId && filtered.length) setSelectedId(filtered[0].id);
+      }, [filtered, selectedId]);
+
+      const selected = requests.find((r) => r.id === selectedId) || null;
+
+      const select = (id) => { setSelectedId(id); setMobileDetail(true); };
+      const move = (delta) => {
+        if (!filtered.length) return;
+        const idx = filtered.findIndex((r) => r.id === selectedId);
+        const next = filtered[Math.max(0, Math.min(filtered.length - 1, (idx === -1 ? 0 : idx + delta)))];
+        setSelectedId(next.id);
+      };
+      const toggleMethod = (m) => setMethods((ms) => (m === null ? [] : ms.includes(m) ? ms.filter((x) => x !== m) : [...ms, m]));
+      const toggleCheck = (id) => setChecked((c) => (id === null ? [] : c.includes(id) ? c.filter((x) => x !== id) : [...c, id].slice(-2)));
+
+      const clearAll = async () => {
+        if (!requests.length) return;
+        if (!confirm(`Delete all ${requests.length} captured requests?`)) return;
+        try { await api('/api/requests', { method: 'DELETE' }); toast('History cleared'); } catch (err) { toast(err.message, 'error'); }
+      };
+
+      const copyCurl = async () => {
+        if (!selected) return;
+        try {
+          const text = await api(`/api/requests/${selected.id}/curl`);
+          const ok = await copyText(text);
+          toast(ok ? 'cURL copied to clipboard' : 'Copy failed', ok ? 'info' : 'error');
+        } catch (err) { toast(err.message, 'error'); }
+      };
+
+      const diffPair = checked.length === 2
+        ? checked.map((id) => requests.find((r) => r.id === id)).filter(Boolean).sort((x, y) => x.seq - y.seq)
+        : [];
+      const openDiff = () => { if (diffPair.length === 2) setDiffOpen(true); else toast('Select two requests to compare'); };
+
+      const keyHandler = useRef(null);
+      useEffect(() => {
+        const listener = (e) => keyHandler.current && keyHandler.current(e);
+        window.addEventListener('keydown', listener);
+        return () => window.removeEventListener('keydown', listener);
+      }, []);
+      {
+        keyHandler.current = (e) => {
+          const t = e.target;
+          const typing = t && ((t.tagName === 'INPUT' && !['checkbox', 'radio', 'button', 'submit'].includes(t.type)) || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+          if (e.key === 'Escape') {
+            if (diffOpen) { setDiffOpen(false); return; }
+            if (helpOpen) { setHelpOpen(false); return; }
+            if (typing) { t.blur(); if (t === searchRef.current && query) setQuery(''); return; }
+            if (checked.length) { setChecked([]); return; }
+            if (mobileDetail) setMobileDetail(false);
+            return;
+          }
+          if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+          if (diffOpen || helpOpen) return;
+          switch (e.key) {
+            case 'j': case 'ArrowDown': e.preventDefault(); move(1); break;
+            case 'k': case 'ArrowUp': e.preventDefault(); move(-1); break;
+            case '/': e.preventDefault(); searchRef.current && searchRef.current.focus(); break;
+            case 'r': if (selected) { e.preventDefault(); setTab('replay'); setMobileDetail(true); setReplayRequest({ id: selected.id, at: Date.now() }); } break;
+            case 'c': e.preventDefault(); copyCurl(); break;
+            case 'x': if (selected) toggleCheck(selected.id); break;
+            case 'd': openDiff(); break;
+            case '?': setHelpOpen(true); break;
+            default:
+              if (/^[1-6]$/.test(e.key)) setTab(TABS[Number(e.key) - 1][0]);
+          }
+        };
+      }
+
+      const empty = loaded && requests.length === 0;
+
+      return html`<div class="flex h-full flex-col">
+        <${Header} info=${info} conn=${conn} count=${requests.length} onClear=${clearAll} onHelp=${() => setHelpOpen(true)} captureBase=${captureBase} />
+        ${!loaded
+          ? html`<div class="grid flex-1 place-items-center text-sm text-faint">Loading…</div>`
+          : empty
+            ? html`<main class="min-h-0 flex-1"><${EmptyState} captureBase=${captureBase} /></main>`
+            : html`<main class="flex min-h-0 flex-1">
+                <${Sidebar} items=${filtered} total=${requests.length} selectedId=${selectedId} onSelect=${select}
+                  query=${query} setQuery=${setQuery} methods=${methods} toggleMethod=${toggleMethod} searchRef=${searchRef}
+                  checked=${checked} toggleCheck=${toggleCheck} onDiff=${openDiff} now=${now} freshIds=${freshIds} hidden=${mobileDetail} />
+                <div class="${mobileDetail ? 'flex' : 'hidden md:flex'} min-h-0 min-w-0 flex-1">
+                  ${selected
+                    ? html`<${Detail} req=${selected} info=${info} tab=${tab} setTab=${setTab} toast=${toast}
+                        replayRequest=${replayRequest} onReplayConsumed=${() => setReplayRequest(null)}
+                        onBack=${() => setMobileDetail(false)} captureBase=${captureBase} />`
+                    : html`<div class="grid flex-1 place-items-center text-sm text-faint">Select a request</div>`}
+                </div>
+              </main>`}
+        ${diffOpen && diffPair.length === 2 && html`<${DiffModal} a=${diffPair[0]} b=${diffPair[1]} onClose=${() => setDiffOpen(false)} />`}
+        ${helpOpen && html`<${HelpModal} onClose=${() => setHelpOpen(false)} />`}
+        <${Toasts} toasts=${toasts} />
+      </div>`;
+    }
+
+    render(html`<${App} />`, document.getElementById('app'));
+  </script>
 </body>
 </html>

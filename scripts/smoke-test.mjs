@@ -8,6 +8,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
+import ts from 'typescript';
+import vm from 'node:vm';
 
 const CLI = new URL('../dist/cli.js', import.meta.url).pathname;
 const results = [];
@@ -237,6 +239,61 @@ async function main() {
     const py = await fetch(`${base}/api/requests/${cap.id}/code?lang=python`).then(json);
     check('code export (python) works', py.code.includes('requests.request('));
 
+    // Phase 3 codegen: all languages, TS syntax, and runnable Jest/Vitest fixtures
+    const all = await fetch(`${base}/api/requests/${cap.id}/code?lang=all`).then(json);
+    const langs = all.snippets.map((x) => x.lang).join(',');
+    check('code export lang=all returns every language', langs === 'curl,fetch,typescript,python,httpie,vitest,jest', langs);
+    const syntaxErrors = (code, file) =>
+      ts.transpileModule(code, { reportDiagnostics: true, fileName: file, compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).diagnostics.length;
+    const tsCode = all.snippets.find((x) => x.lang === 'typescript').code;
+    check('typescript fetch snippet parses as TypeScript', syntaxErrors(tsCode, 'snippet.ts') === 0 && tsCode.includes('RequestInit'));
+    const fetchCode = all.snippets.find((x) => x.lang === 'fetch').code;
+    check('fetch (JS) snippet parses as JavaScript', syntaxErrors(fetchCode, 'snippet.mjs') === 0);
+    const vitestCode = all.snippets.find((x) => x.lang === 'vitest').code;
+    check(
+      'vitest fixture is valid TypeScript with vitest imports and the captured payload',
+      syntaxErrors(vitestCode, 'webhook.test.ts') === 0 && vitestCode.includes("from 'vitest'") && vitestCode.includes('toMatchObject') && vitestCode.includes('"order.created"'),
+    );
+    const jestCode = all.snippets.find((x) => x.lang === 'jest').code;
+    // Run the Jest fixture for real with minimal describe/it/expect shims, pointed at the echo server.
+    const tests = [];
+    const failures = [];
+    const expect = (actual) => ({
+      toBe: (v) => { if (actual !== v) throw new Error(`expected ${actual} to be ${v}`); },
+      toBeLessThan: (v) => { if (!(actual < v)) throw new Error(`expected ${actual} < ${v}`); },
+      toMatchObject: (v) => { if (JSON.stringify({ ...actual, ...v }) !== JSON.stringify(actual)) throw new Error('object mismatch'); },
+    });
+    const before = echo.received.length;
+    vm.runInNewContext(jestCode, {
+      describe: (_n, fn) => fn(),
+      it: (n, fn) => tests.push([n, fn]),
+      expect,
+      fetch,
+      Buffer,
+      process: { env: { WEBHOOK_URL: `${echo.url}/jest-fixture` } },
+    });
+    for (const [n, fn] of tests) {
+      try { await fn(); } catch (e) { failures.push(`${n}: ${e.message}`); }
+    }
+    const hit = echo.received.slice(before).find((r) => r.url === '/jest-fixture');
+    check(
+      'jest fixture runs: both tests pass and it re-sends the identical body',
+      tests.length === 2 && failures.length === 0 && hit && hit.body === JSON.stringify(payload) && hit.headers['x-custom'] === 'hello',
+      failures.join('; ') || `${tests.length} tests`,
+    );
+
+    // Replay overrides (method + headers)
+    const ovr = await fetch(`${base}/api/requests/${cap.id}/replay`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ target: `${echo.url}/override`, method: 'PUT', headers: { 'x-extra': 'yes', 'x-custom': null } }),
+    }).then(json);
+    const ovrEcho = JSON.parse(ovr.body);
+    check(
+      'replay supports method and header overrides',
+      ovr.method === 'PUT' && ovrEcho.method === 'PUT' && ovrEcho.headers['x-extra'] === 'yes' && ovrEcho.headers['x-custom'] === undefined,
+    );
+
     // 7: verification
     const stripeBody = JSON.stringify({ id: 'evt_1', type: 'charge.succeeded' });
     const t = Math.floor(Date.now() / 1000);
@@ -252,6 +309,21 @@ async function main() {
     const g1 = await fetch(`${base}/wh/github`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-hub-signature-256': ghSig }, body: ghBody }).then(json);
     const gv = (await fetch(`${base}/api/requests/${g1.id}`).then(json)).verification;
     check('GitHub signature valid', gv?.provider === 'github' && gv.valid, gv?.reason);
+
+    // Manual verification endpoint (dashboard "Verify Signature" tab)
+    const verify = (id, body) =>
+      fetch(`${base}/api/requests/${id}/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(json);
+    const mv1 = await verify(s1.id, { secret: STRIPE });
+    const mv2 = await verify(s1.id, { secret: 'whsec_wrong' });
+    const mv3 = await verify(g1.id, { secret: GITHUB, provider: 'auto' });
+    const mv4 = await verify(g1.id, { secret: GITHUB, provider: 'stripe' });
+    const unsigned = await fetch(`${base}/wh/unsigned`, { method: 'POST', body: '{"a":1}', headers: { 'content-type': 'application/json' } }).then(json);
+    const mv5 = await verify(unsigned.id, { secret: 'anything' });
+    check('verify endpoint: auto-detects Stripe and validates', mv1.valid && mv1.provider === 'stripe' && mv1.detected === 'stripe', mv1.reason);
+    check('verify endpoint: wrong secret gives a reason', !mv2.valid && /mismatch/i.test(mv2.reason), mv2.reason);
+    check('verify endpoint: auto-detects GitHub', mv3.valid && mv3.provider === 'github', mv3.reason);
+    check('verify endpoint: forced provider mismatch explained', !mv4.valid && /no Stripe-Signature header/i.test(mv4.reason), mv4.reason);
+    check('verify endpoint: unsigned request explained', !mv5.valid && mv5.provider === null && /No signature header/i.test(mv5.reason), mv5.reason);
 
     // 8: max-history trims (limit 3)
     const removed = waitForSse(base, 'request.removed');
@@ -325,6 +397,12 @@ async function main() {
     `${demo.requests.length} requests`,
   );
   await stopCli(c3);
+
+  // 14: tunnel fallback reporting (offline-safe: cloudflared binary deliberately missing)
+  process.env.HOOKBOX_CLOUDFLARED = join(tmp, 'no-such-cloudflared');
+  const { openTunnel } = await import(new URL('../dist/tunnel.js', import.meta.url));
+  const outcome = await openTunnel(1, 'cloudflared');
+  check('tunnel: missing cloudflared is reported, not thrown', outcome.tunnel === null && /not installed/.test(outcome.errors[0] ?? ''), outcome.errors[0]);
 
   await echo.close();
   rmSync(tmp, { recursive: true, force: true });

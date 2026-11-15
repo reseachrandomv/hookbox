@@ -99,6 +99,38 @@ function binaryUpload(): DemoRequest {
   return { name: 'binary upload', method: 'POST', path: '/wh/uploads', headers: { 'content-type': 'application/octet-stream' }, body: randomBytes(64) };
 }
 
+function githubPullRequestWrongSecret(): DemoRequest {
+  const body = JSON.stringify({
+    action: 'opened',
+    number: 7,
+    pull_request: { title: 'Add retry backoff', user: { login: 'hubot' }, head: { ref: 'feat/backoff' }, base: { ref: 'main' } },
+    repository: { full_name: 'acme/webapp' },
+  });
+  return {
+    name: 'github pull_request (signed with the wrong secret)',
+    method: 'POST',
+    path: '/wh/github',
+    headers: {
+      'content-type': 'application/json',
+      'user-agent': 'GitHub-Hookshot/abc1234',
+      'x-github-event': 'pull_request',
+      'x-github-delivery': randomUUID(),
+      'x-hub-signature-256': signGitHub(body, 'not-the-configured-secret'),
+    },
+    body,
+  };
+}
+
+function patchProfile(): DemoRequest {
+  return {
+    name: 'user updated (PATCH)',
+    method: 'PATCH',
+    path: '/wh/users/u_314',
+    headers: { 'content-type': 'application/merge-patch+json', 'x-event': 'user.updated' },
+    body: JSON.stringify({ email: 'grace@example.com', preferences: { theme: 'dark', digest: 'weekly' } }),
+  };
+}
+
 function deleteHook(): DemoRequest {
   return { name: 'subscription deleted (DELETE)', method: 'DELETE', path: '/wh/subscriptions/sub_42', headers: { 'x-event': 'subscription.deleted' } };
 }
@@ -111,13 +143,20 @@ export function buildDemoSequence(stripeSecret: string, githubSecret: string): A
     genericPut,
     pingGet,
     () => stripeEvent(stripeSecret, true),
+    patchProfile,
     binaryUpload,
+    githubPullRequestWrongSecret,
     deleteHook,
   ];
 }
 
 export async function sendDemoRequest(baseUrl: string, req: DemoRequest): Promise<number> {
-  const res = await fetch(new URL(req.path, baseUrl), { method: req.method, headers: req.headers, body: req.body });
+  const res = await fetch(new URL(req.path, baseUrl), {
+    method: req.method,
+    headers: { ...req.headers, 'x-hookbox-demo': '1' },
+    body: req.body,
+    signal: AbortSignal.timeout(10_000),
+  });
   await res.arrayBuffer();
   return res.status;
 }
