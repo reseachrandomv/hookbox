@@ -6,6 +6,7 @@
 
 An open-source, local alternative to Webhook.site and RequestBin, with replay, a Stripe and GitHub signature checker, and a live dashboard.
 
+[![CI](https://github.com/reseachrandomv/hookbox/actions/workflows/ci.yml/badge.svg)](https://github.com/reseachrandomv/hookbox/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
 [![Node >= 20](https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript&logoColor=white)](tsconfig.json)
@@ -19,10 +20,10 @@ An open-source, local alternative to Webhook.site and RequestBin, with replay, a
 
 </div>
 
-<!-- DEMO GIF PLACEHOLDER: record a 10–15s terminal + dashboard demo, save it as docs/demo.gif and replace this block with:
-<p align="center"><img src="docs/demo.gif" alt="HookBox demo" width="100%" /></p>
--->
-> 🎬 **Demo GIF coming soon.** *(Placeholder: `docs/demo.gif`, showing `npx … --demo`, requests streaming in, a replay and a signature check.)*
+<p align="center">
+  <img src="docs/demo.gif" alt="HookBox demo: requests stream in live, a Stripe signature is verified, the request is replayed to localhost, and two events are diffed" width="100%" />
+  <br /><sub>Live feed → Verify Signature → one-key Replay → JSON Diff (15 s, recorded with <code>--demo</code>)</sub>
+</p>
 
 ---
 
@@ -232,13 +233,14 @@ You don't need a tunnel for local testing. You only need one when a third party 
 - [ ] Export / import sessions (HAR / JSON)
 - [ ] Request search across the persisted SQLite history
 - [ ] Docker image and Homebrew formula
-- [ ] Recorded demo GIF for this README
 
 Have an idea? [Open an issue](https://github.com/reseachrandomv/hookbox/issues).
 
 ---
 
 ## 🤝 Contributing
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)**, our [Code of Conduct](CODE_OF_CONDUCT.md) and the [security policy](SECURITY.md). Issues labelled [`good first issue`](https://github.com/reseachrandomv/hookbox/labels/good%20first%20issue) are a great starting point.
 
 PRs are very welcome, especially new signature verifiers, code exporters and UI polish.
 

@@ -1,0 +1,29 @@
+name: ✨ Feature request
+description: Suggest an idea or improvement for HookBox
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the workflow or pain point, e.g. "I can't verify Shopify webhooks locally".
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like HookBox to do? CLI flags, UI or API shape are all welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you've considered
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you like to work on this?
+      options: ["Yes, I'd like to open a PR", "Maybe, with some guidance", "No, just suggesting"]
+    validations:
+      required: true
